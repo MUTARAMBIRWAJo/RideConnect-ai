@@ -1,0 +1,36 @@
+services:
+
+  # -----------------------------------------------------------------------
+  # AI Service — FastAPI predictive pricing + driver assignment
+  # -----------------------------------------------------------------------
+  ai-service:
+    build: .
+    container_name: rideconnect_ai
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file: .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: "postgresql://postgres.tpahuvmhlfluztuhznfj:rOnptMsAAnTbrpIY@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+      MODEL_PATH: "models/price_model.pkl"
+      LOG_DIR: "logs"
+    volumes:
+      - ai_model_data:/app/models
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - rideconnect
+
+networks:
+  rideconnect:
+    driver: bridge
+
+volumes:
+  ai_model_data:
+    driver: local
