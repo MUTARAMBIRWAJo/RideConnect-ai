@@ -1,36 +1,86 @@
 services:
-
-  # -----------------------------------------------------------------------
-  # AI Service — FastAPI predictive pricing + driver assignment
-  # -----------------------------------------------------------------------
   ai-service:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: rideconnect_ai
     restart: unless-stopped
-    ports:
-      - "8001:8001"
-    env_file: .env
+    env_file:
+      - .env
     environment:
       PYTHONUNBUFFERED: "1"
-      DATABASE_URL: "postgresql://postgres.tpahuvmhlfluztuhznfj:rOnptMsAAnTbrpIY@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
-      MODEL_PATH: "models/price_model.pkl"
-      LOG_DIR: "logs"
+      MODEL_PATH: ${MODEL_PATH:-models/price_model.pkl}
+      LOG_DIR: ${LOG_DIR:-logs}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_QUEUE_NAME: ${REDIS_QUEUE_NAME:-rideconnect:jobs}
+      REDIS_QUEUE_ENABLED: ${REDIS_QUEUE_ENABLED:-true}
+    command: >
+      sh -c "uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8001
+      --workers ${UVICORN_WORKERS:-2}"
+    ports:
+      - "8001:8001"
     volumes:
-      - ai_model_data:/app/models
-      - ./logs:/app/logs
+      - ai_models:/app/models
+      - ai_logs:/app/logs
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 20s
+      retries: 5
+      start_period: 25s
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
-      - rideconnect
+      - rideconnect_net
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rideconnect_ai_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LOG_DIR: ${LOG_DIR:-logs}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_QUEUE_NAME: ${REDIS_QUEUE_NAME:-rideconnect:jobs}
+      JOB_RESULT_TTL_SECONDS: ${JOB_RESULT_TTL_SECONDS:-86400}
+    command: ["python", "-m", "app.worker"]
+    volumes:
+      - ai_models:/app/models
+      - ai_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - rideconnect_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: rideconnect_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - rideconnect_net
 
 networks:
-  rideconnect:
+  rideconnect_net:
     driver: bridge
 
 volumes:
-  ai_model_data:
-    driver: local
+  ai_models:
+  ai_logs:
+  redis_data:

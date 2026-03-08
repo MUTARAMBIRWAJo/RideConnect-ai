@@ -43,19 +43,22 @@ Rate limiting: 60 req/min per IP (in-process token bucket)
 from __future__ import annotations
 
 import datetime
+import os
 import random
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from cachetools import TTLCache
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security, status
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from app import service
 from app.utils import logger
+
+PRICE_CACHE_TTL_SECONDS = int(os.getenv("PRICE_CACHE_TTL_SECONDS", "300"))
+DEMAND_CACHE_TTL_SECONDS = int(os.getenv("DEMAND_CACHE_TTL_SECONDS", "120"))
 
 # ---------------------------------------------------------------------------
 # Lazy-loaded AI modules (imported inside handlers to avoid startup errors
@@ -154,9 +157,6 @@ app = FastAPI(
     description="Full intelligent mobility AI/ML engine for RideConnect.",
     lifespan=lifespan,
 )
-
-_price_cache: TTLCache = TTLCache(maxsize=500, ttl=300)
-_demand_cache: TTLCache = TTLCache(maxsize=200, ttl=120)
 
 
 # ---------------------------------------------------------------------------
@@ -277,11 +277,18 @@ def root():
 @app.get("/health", tags=["Health"])
 async def health_check(_: str = Depends(require_api_key)):
     db_ok = False
+    redis_ok = False
     try:
         await service.database.fetch_one("SELECT 1")
         db_ok = True
     except Exception as exc:
         logger.warning("DB health check failed: %s", exc)
+
+    try:
+        if service.redis_client is not None:
+            redis_ok = bool(await service.redis_client.ping())
+    except Exception as exc:
+        logger.warning("Redis health check failed: %s", exc)
 
     modules = {
         "price_model":    service.price_model.is_loaded,
@@ -295,6 +302,7 @@ async def health_check(_: str = Depends(require_api_key)):
     return {
         "status": "ok" if all_ok else "degraded",
         "database_connected": db_ok,
+        "redis_connected": redis_ok,
         "models": modules,
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
     }
@@ -305,9 +313,14 @@ async def health_check(_: str = Depends(require_api_key)):
 # ===========================================================================
 @app.post("/predict-price", response_model=PricePredictResponse, tags=["Predictions"])
 async def predict_price(body: PricePredictRequest, _: str = Depends(require_api_key)):
-    cache_key = (body.distance_km, body.demand_level, body.traffic_level, body.ride_type)
-    if cache_key in _price_cache:
-        cached = dict(_price_cache[cache_key]); cached["cached"] = True
+    cache_key = (
+        "rideconnect:cache:price:"
+        f"{body.distance_km}:{body.demand_level}:{body.traffic_level}:{body.ride_type}"
+    )
+    cached_payload = await service.cache_get_json(cache_key)
+    if cached_payload:
+        cached = dict(cached_payload)
+        cached["cached"] = True
         return PricePredictResponse(**cached)
 
     price = service.price_model.predict(
@@ -316,7 +329,7 @@ async def predict_price(body: PricePredictRequest, _: str = Depends(require_api_
     )
     payload = {"recommended_price": price, "currency": "KES",
                "model_used": service.price_model.is_loaded, "cached": False}
-    _price_cache[cache_key] = payload
+    await service.cache_set_json(cache_key, payload, ttl_seconds=PRICE_CACHE_TTL_SECONDS)
 
     try:
         await service.database.execute(
@@ -411,9 +424,14 @@ async def predict_demand(body: DemandRequest, _: str = Depends(require_api_key))
     hour = body.hour if body.hour is not None else now.hour
     dow = body.day_of_week if body.day_of_week is not None else now.weekday()
 
-    cache_key = (round(body.latitude, 2), round(body.longitude, 2), hour, dow)
-    if cache_key in _demand_cache:
-        return _demand_cache[cache_key]
+    cache_key = (
+        "rideconnect:cache:demand:"
+        f"{round(body.latitude, 2)}:{round(body.longitude, 2)}:{hour}:{dow}:"
+        f"{body.traffic_level}:{body.weather}:{body.event_indicator}"
+    )
+    cached_payload = await service.cache_get_json(cache_key)
+    if cached_payload:
+        return cached_payload
 
     result = _demand().predict(
         hour=hour, day_of_week=dow,
@@ -450,7 +468,7 @@ async def predict_demand(body: DemandRequest, _: str = Depends(require_api_key))
         "day_of_week": dow,
         **result,
     }
-    _demand_cache[cache_key] = payload
+    await service.cache_set_json(cache_key, payload, ttl_seconds=DEMAND_CACHE_TTL_SECONDS)
 
     try:
         if zone_id:
@@ -738,7 +756,20 @@ async def analytics_system_health(_: str = Depends(require_api_key)):
 # ===========================================================================
 @app.post("/retrain", tags=["Admin"])
 async def retrain(body: RetrainRequest, _: str = Depends(require_api_key)):
-    """Trigger model retraining pipeline.  Runs synchronously — use background task for prod."""
+    """Trigger model retraining pipeline; queues job in Redis when enabled."""
+    if service.REDIS_QUEUE_ENABLED and service.redis_client is not None:
+        job_id = await service.enqueue_job(
+            "retrain_models",
+            payload={"models": body.models or []},
+        )
+        if job_id:
+            return {
+                "status": "queued",
+                "job_id": job_id,
+                "queue": service.REDIS_QUEUE_NAME,
+                "note": "Track with GET /jobs/{job_id}.",
+            }
+
     import asyncio
     from app.retraining import run_full_pipeline
     loop = asyncio.get_event_loop()
@@ -751,3 +782,12 @@ async def retrain(body: RetrainRequest, _: str = Depends(require_api_key)):
     _anomaly().load()
     _hotspot().load()
     return {"status": "retraining_complete", "results": results}
+
+
+@app.get("/jobs/{job_id}", tags=["Admin"])
+async def get_job(job_id: str, _: str = Depends(require_api_key)):
+    """Get queued job status from Redis-backed job metadata."""
+    job = await service.get_job_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job status not found.")
+    return {"job_id": job_id, **job}

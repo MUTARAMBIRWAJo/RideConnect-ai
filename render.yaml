@@ -1,0 +1,73 @@
+services:
+  - type: web
+    name: rideconnect-ai-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: "8001"
+      - key: UVICORN_WORKERS
+        value: "2"
+      - key: MODEL_PATH
+        value: models/price_model.pkl
+      - key: LOG_DIR
+        value: logs
+      - key: REDIS_QUEUE_NAME
+        value: rideconnect:jobs
+      - key: REDIS_QUEUE_ENABLED
+        value: "true"
+      - key: PRICE_CACHE_TTL_SECONDS
+        value: "300"
+      - key: DEMAND_CACHE_TTL_SECONDS
+        value: "120"
+      - key: JOB_RESULT_TTL_SECONDS
+        value: "86400"
+      - key: WORKER_POLL_TIMEOUT
+        value: "5"
+      - key: API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: rideconnect-ai-redis
+          property: connectionString
+
+  - type: worker
+    name: rideconnect-ai-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m app.worker
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: MODEL_PATH
+        value: models/price_model.pkl
+      - key: LOG_DIR
+        value: logs
+      - key: REDIS_QUEUE_NAME
+        value: rideconnect:jobs
+      - key: JOB_RESULT_TTL_SECONDS
+        value: "86400"
+      - key: WORKER_POLL_TIMEOUT
+        value: "5"
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: rideconnect-ai-redis
+          property: connectionString
+
+  - type: redis
+    name: rideconnect-ai-redis
+    plan: starter
+    maxmemoryPolicy: allkeys-lru

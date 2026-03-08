@@ -19,8 +19,10 @@ COPY ./app ./app
 # Persistent directories (overridden by Docker volumes in production)
 RUN mkdir -p logs models
 
+EXPOSE 8001
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8001/ || exit 1
 
-# 2 workers for light concurrency; increase behind a load-balancer
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "2"]
+# Worker count is configurable for horizontal scaling scenarios.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001} --workers ${UVICORN_WORKERS:-2}"]
