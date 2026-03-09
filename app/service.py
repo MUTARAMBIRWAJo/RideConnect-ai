@@ -21,19 +21,37 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Configuration (sourced from .env / docker-compose environment)
 # ---------------------------------------------------------------------------
-DATABASE_URL: str = os.environ["DATABASE_URL"]
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
 API_KEY: str = os.environ.get("API_KEY", "")
 MODEL_PATH: str = os.environ.get("MODEL_PATH", "app/price_model.pkl")
 REDIS_URL: str = os.environ.get("REDIS_URL", "")
 REDIS_QUEUE_NAME: str = os.environ.get("REDIS_QUEUE_NAME", "rideconnect:jobs")
 REDIS_QUEUE_ENABLED: bool = os.environ.get("REDIS_QUEUE_ENABLED", "true").lower() == "true"
 JOB_RESULT_TTL_SECONDS: int = int(os.environ.get("JOB_RESULT_TTL_SECONDS", "86400"))
+DB_ENABLED: bool = bool(DATABASE_URL)
 
 # ---------------------------------------------------------------------------
 # Async connection pool (asyncpg driver)
 # databases library accepts postgresql:// URLs directly
 # ---------------------------------------------------------------------------
-database = databases.Database(DATABASE_URL)
+class _NoopDatabase:
+    async def connect(self) -> None:
+        return None
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def fetch_one(self, *_args, **_kwargs):
+        return None
+
+    async def fetch_all(self, *_args, **_kwargs):
+        return []
+
+    async def execute(self, *_args, **_kwargs):
+        return None
+
+
+database = databases.Database(DATABASE_URL) if DB_ENABLED else _NoopDatabase()
 
 # ---------------------------------------------------------------------------
 # Model singleton — loaded once, reused for every prediction
@@ -131,8 +149,11 @@ async def get_job_status(job_id: str) -> Optional[dict[str, Any]]:
 # Lifecycle helpers (called from main.py lifespan)
 # ---------------------------------------------------------------------------
 async def startup() -> None:
-    await database.connect()
-    logger.info("Database connection pool opened.")
+    if DB_ENABLED:
+        await database.connect()
+        logger.info("Database connection pool opened.")
+    else:
+        logger.warning("DATABASE_URL is not set; database-backed endpoints will be degraded.")
 
     await init_redis()
 
@@ -140,18 +161,20 @@ async def startup() -> None:
     logger.info("Price model ready — loaded=%s  path=%s", price_model.is_loaded, MODEL_PATH)
 
     # Enumerate public tables for diagnostic visibility
-    try:
-        rows = await database.fetch_all(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'public' ORDER BY table_name"
-        )
-        tables = [r["table_name"] for r in rows]
-        logger.info("Supabase public tables (%d): %s", len(tables), tables)
-    except Exception as exc:
-        logger.warning("Schema inspection skipped: %s", exc)
+    if DB_ENABLED:
+        try:
+            rows = await database.fetch_all(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' ORDER BY table_name"
+            )
+            tables = [r["table_name"] for r in rows]
+            logger.info("Supabase public tables (%d): %s", len(tables), tables)
+        except Exception as exc:
+            logger.warning("Schema inspection skipped: %s", exc)
 
 
 async def shutdown() -> None:
     await close_redis()
-    await database.disconnect()
-    logger.info("Database connection pool closed.")
+    if DB_ENABLED:
+        await database.disconnect()
+        logger.info("Database connection pool closed.")

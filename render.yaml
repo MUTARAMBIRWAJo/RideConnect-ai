@@ -2,7 +2,7 @@ services:
   - type: web
     name: rideconnect-ai-service
     runtime: docker
-    dockerfilePath: ./docker/Dockerfile
+    dockerfilePath: ./Dockerfile
     plan: starter
     autoDeploy: true
     healthCheckPath: /
@@ -10,9 +10,9 @@ services:
       - key: APP_ENV
         value: production
       - key: PORT
-        value: "8000"
+        value: "10000"
       - key: UVICORN_WORKERS
-        value: "2"
+        value: "1"
       - key: MODEL_PATH
         value: models/price_model.pkl
       - key: LOG_DIR

@@ -313,13 +313,15 @@ def root():
 
 @app.get("/health", tags=["Health"])
 async def health_check(_: str = Depends(require_api_key)):
-    db_ok = False
+    db_ok = service.DB_ENABLED
     redis_ok = False
-    try:
-        await service.database.fetch_one("SELECT 1")
-        db_ok = True
-    except Exception as exc:
-        logger.warning("DB health check failed: %s", exc)
+    if service.DB_ENABLED:
+        try:
+            await service.database.fetch_one("SELECT 1")
+            db_ok = True
+        except Exception as exc:
+            db_ok = False
+            logger.warning("DB health check failed: %s", exc)
 
     try:
         if service.redis_client is not None:
@@ -767,12 +769,13 @@ async def analytics_driver_performance(_: str = Depends(require_api_key)):
 
 @app.get("/analytics/system-health", tags=["Analytics"])
 async def analytics_system_health(_: str = Depends(require_api_key)):
-    db_ok = False
-    try:
-        await service.database.fetch_one("SELECT 1")
-        db_ok = True
-    except Exception:
-        pass
+    db_ok = service.DB_ENABLED
+    if service.DB_ENABLED:
+        try:
+            await service.database.fetch_one("SELECT 1")
+            db_ok = True
+        except Exception:
+            db_ok = False
     return {
         "status": "ok" if db_ok else "degraded",
         "database": db_ok,
