@@ -20,7 +20,7 @@
 
 ## 3. Healthchecks and runtime
 - Web healthcheck path: `/`
-- Container command: `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001}`
+- Container command: `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers ${UVICORN_WORKERS:-1}`
 - Worker command: `python -m app.worker`
 - Service restart policy is managed by Render; failed processes auto-restart.
 
