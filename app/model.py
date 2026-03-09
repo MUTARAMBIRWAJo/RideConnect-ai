@@ -38,7 +38,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 class PriceModel:
     """Singleton wrapper around a persisted sklearn model."""
 
-    BASE_PRICE: float = 1_000.0  # KES fallback base
+    BASE_PRICE: float = 1_000.0  # RWF fallback base
 
     def __init__(self, path: str) -> None:
         self.path = path
@@ -78,7 +78,7 @@ class PriceModel:
         ride_type_enc = RIDE_TYPE_MAP.get(ride_type.lower().strip(), 0)
 
         if not self.is_loaded:
-            # Rule-based fallback prices calibrated for East-African market (KES)
+            # Rule-based fallback prices calibrated for Rwandan market (RWF)
             base = self.BASE_PRICE + distance_km * 200
             surge = 1.0 + (demand_level - 1) * 0.15 + (traffic_level - 1) * 0.08
             type_premium = [0, 400, 200, -100][ride_type_enc]

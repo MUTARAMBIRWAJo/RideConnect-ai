@@ -1,0 +1,43 @@
+city_id: kigali
+base_pricing:
+  base_fare: 1200
+  distance_rate: 420
+  time_rate: 95
+traffic_profiles:
+  peak_multiplier: 1.35
+  offpeak_multiplier: 1.0
+demand_patterns:
+  morning_peak: [7, 8, 9]
+  evening_peak: [17, 18, 19, 20]
+city_zones:
+  - zone_id: core
+    center_lat: -1.9441
+    center_lng: 30.0619
+  - zone_id: airport
+    center_lat: -1.9686
+    center_lng: 30.1395
+  - zone_id: kimironko
+    center_lat: -1.9501
+    center_lng: 30.1127
+roads:
+  - from_lat: -1.9441
+    from_lng: 30.0619
+    to_lat: -1.9501
+    to_lng: 30.1127
+    distance_km: 5.7
+    speed_kmh: 32
+    bidirectional: true
+  - from_lat: -1.9501
+    from_lng: 30.1127
+    to_lat: -1.9686
+    to_lng: 30.1395
+    distance_km: 4.4
+    speed_kmh: 30
+    bidirectional: true
+  - from_lat: -1.9441
+    from_lng: 30.0619
+    to_lat: -1.9686
+    to_lng: 30.1395
+    distance_km: 9.6
+    speed_kmh: 34
+    bidirectional: true

@@ -130,6 +130,6 @@ INSERT INTO system_metrics (metric_name, metric_value, metric_unit, tags)
 VALUES
     ('api_requests_total',     0,    'count',   '{"service":"ai"}'),
     ('prediction_latency_ms',  0,    'ms',      '{"endpoint":"predict-price"}'),
-    ('model_accuracy_mae',     402,  'KES',     '{"model":"price_v1"}'),
+     ('model_accuracy_mae',     402,  'RWF',     '{"model":"price_v1"}'),
     ('active_drivers',         0,    'count',   '{"status":"online"}'),
     ('demand_score_avg',       0.62, 'score',   '{"city":"kigali"}');

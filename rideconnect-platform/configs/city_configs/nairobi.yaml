@@ -1,0 +1,43 @@
+city_id: nairobi
+base_pricing:
+  base_fare: 220
+  distance_rate: 80
+  time_rate: 18
+traffic_profiles:
+  peak_multiplier: 1.5
+  offpeak_multiplier: 1.0
+demand_patterns:
+  morning_peak: [6, 7, 8, 9]
+  evening_peak: [16, 17, 18, 19, 20]
+city_zones:
+  - zone_id: cbd
+    center_lat: -1.2864
+    center_lng: 36.8172
+  - zone_id: westlands
+    center_lat: -1.2675
+    center_lng: 36.8108
+  - zone_id: jkia
+    center_lat: -1.3192
+    center_lng: 36.9278
+roads:
+  - from_lat: -1.2864
+    from_lng: 36.8172
+    to_lat: -1.2675
+    to_lng: 36.8108
+    distance_km: 3.1
+    speed_kmh: 26
+    bidirectional: true
+  - from_lat: -1.2864
+    from_lng: 36.8172
+    to_lat: -1.3192
+    to_lng: 36.9278
+    distance_km: 13.5
+    speed_kmh: 28
+    bidirectional: true
+  - from_lat: -1.2675
+    from_lng: 36.8108
+    to_lat: -1.3192
+    to_lng: 36.9278
+    distance_km: 15.8
+    speed_kmh: 27
+    bidirectional: true

@@ -55,6 +55,11 @@ from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from app import service
+from app.routes.anomalies import router as ai_anomalies_router
+from app.routes.demand import router as ai_demand_router
+from app.routes.driver_behavior import router as ai_driver_behavior_router
+from app.routes.redistribution import router as ai_redistribution_router
+from app.routes.traffic import router as ai_traffic_router
 from app.utils import logger
 
 PRICE_CACHE_TTL_SECONDS = int(os.getenv("PRICE_CACHE_TTL_SECONDS", "300"))
@@ -158,6 +163,38 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# New intelligence layer endpoints for Laravel + dashboard integration.
+app.include_router(
+    ai_demand_router,
+    prefix="/ai",
+    tags=["AI Intelligence"],
+    dependencies=[Depends(require_api_key)],
+)
+app.include_router(
+    ai_redistribution_router,
+    prefix="/ai",
+    tags=["AI Intelligence"],
+    dependencies=[Depends(require_api_key)],
+)
+app.include_router(
+    ai_traffic_router,
+    prefix="/ai",
+    tags=["AI Intelligence"],
+    dependencies=[Depends(require_api_key)],
+)
+app.include_router(
+    ai_driver_behavior_router,
+    prefix="/ai",
+    tags=["AI Intelligence"],
+    dependencies=[Depends(require_api_key)],
+)
+app.include_router(
+    ai_anomalies_router,
+    prefix="/ai",
+    tags=["AI Intelligence"],
+    dependencies=[Depends(require_api_key)],
+)
+
 
 # ---------------------------------------------------------------------------
 # Middleware — timing + rate limiting
@@ -189,7 +226,7 @@ class PricePredictRequest(BaseModel):
 
 class PricePredictResponse(BaseModel):
     recommended_price: float
-    currency: str = "KES"
+    currency: str = "RWF"
     model_used: bool
     cached: bool = False
 
@@ -327,7 +364,7 @@ async def predict_price(body: PricePredictRequest, _: str = Depends(require_api_
         distance_km=body.distance_km, demand_level=body.demand_level,
         traffic_level=body.traffic_level, ride_type=body.ride_type,
     )
-    payload = {"recommended_price": price, "currency": "KES",
+    payload = {"recommended_price": price, "currency": "RWF",
                "model_used": service.price_model.is_loaded, "cached": False}
     await service.cache_set_json(cache_key, payload, ttl_seconds=PRICE_CACHE_TTL_SECONDS)
 

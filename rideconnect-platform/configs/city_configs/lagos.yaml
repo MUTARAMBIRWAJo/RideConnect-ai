@@ -1,0 +1,43 @@
+city_id: lagos
+base_pricing:
+  base_fare: 1400
+  distance_rate: 480
+  time_rate: 110
+traffic_profiles:
+  peak_multiplier: 1.55
+  offpeak_multiplier: 1.0
+demand_patterns:
+  morning_peak: [6, 7, 8, 9]
+  evening_peak: [16, 17, 18, 19, 20, 21]
+city_zones:
+  - zone_id: ikeja
+    center_lat: 6.6018
+    center_lng: 3.3515
+  - zone_id: victoria_island
+    center_lat: 6.4281
+    center_lng: 3.4219
+  - zone_id: lekki
+    center_lat: 6.4474
+    center_lng: 3.5339
+roads:
+  - from_lat: 6.6018
+    from_lng: 3.3515
+    to_lat: 6.4281
+    to_lng: 3.4219
+    distance_km: 22.0
+    speed_kmh: 31
+    bidirectional: true
+  - from_lat: 6.4281
+    from_lng: 3.4219
+    to_lat: 6.4474
+    to_lng: 3.5339
+    distance_km: 12.7
+    speed_kmh: 29
+    bidirectional: true
+  - from_lat: 6.6018
+    from_lng: 3.3515
+    to_lat: 6.4474
+    to_lng: 3.5339
+    distance_km: 27.4
+    speed_kmh: 30
+    bidirectional: true

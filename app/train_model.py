@@ -79,7 +79,7 @@ def fetch_training_data(db_url: str) -> pd.DataFrame:
 
     # - distance computed from origin/destination coords
     # - demand proxied by confirmed bookings per ride
-    # - target: price_per_seat (KES)
+    # - target: price_per_seat (RWF)
     cur.execute(
         """
         SELECT
@@ -170,7 +170,7 @@ def synthetic_data(n: int = 300):
     ride_type = rng.integers(0, 4, n).astype(float)
     hour = rng.integers(0, 24, n).astype(float)
     dow = rng.integers(0, 7, n).astype(float)
-    # Loosely calibrated to KES ride prices (Nairobi / Kampala)
+    # Loosely calibrated to RWF ride prices (Kigali)
     price = 800 + dist * 180 + demand * 150 + traffic * 80 + ride_type * 400
     price += rng.normal(0, 200, n)
     price = np.clip(price, 500, 30_000)
@@ -195,7 +195,7 @@ def train_and_save(X: np.ndarray, y: np.ndarray, model_path: str) -> None:
     model.fit(X_train, y_train)
     mae = mean_absolute_error(y_test, model.predict(X_test))
     logger.info(
-        "Training complete — MAE: %.2f KES  |  samples: %d  |  features: distance_km, "
+        "Training complete — MAE: %.2f RWF  |  samples: %d  |  features: distance_km, "
         "demand_level, traffic_level, ride_type, hour, day_of_week",
         mae,
         len(X),

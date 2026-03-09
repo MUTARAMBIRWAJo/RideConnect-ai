@@ -1,0 +1,124 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      - zookeeper
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    ports:
+      - "9092:9092"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+
+  gateway:
+    build:
+      context: ../../
+      dockerfile: rideconnect-platform/docker/Dockerfile
+    command: ["uvicorn", "api_gateway:app", "--app-dir", "gateway", "--host", "0.0.0.0", "--port", "8100", "--workers", "2"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_CACHE_PREFIX=rideconnect:gateway
+      - DISPATCH_SERVICE_URL=http://dispatch-service:8101
+      - PRICING_SERVICE_URL=http://pricing-service:8102
+      - ETA_SERVICE_URL=http://eta-service:8103
+      - DEMAND_SERVICE_URL=http://demand-service:8104
+      - DISPATCH_TIMEOUT_MS=450
+      - ETA_TIMEOUT_MS=450
+      - PRICING_TIMEOUT_MS=450
+      - RIDE_RESPONSE_CACHE_TTL_MS=1200
+      - RIDE_RESPONSE_CACHE_MAX=4000
+      - COALESCE_WAIT_MS=220
+      - PORT=8100
+    ports:
+      - "8100:8100"
+    depends_on:
+      - kafka
+      - redis
+      - dispatch-service
+      - pricing-service
+      - eta-service
+      - demand-service
+
+  dispatch-service:
+    build:
+      context: ../../
+      dockerfile: rideconnect-platform/docker/Dockerfile
+    command: ["uvicorn", "app:app", "--app-dir", "services/dispatch-service", "--host", "0.0.0.0", "--port", "8101", "--workers", "2"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PORT=8101
+    depends_on:
+      - kafka
+
+  pricing-service:
+    build:
+      context: ../../
+      dockerfile: rideconnect-platform/docker/Dockerfile
+    command: ["uvicorn", "app:app", "--app-dir", "services/pricing-service", "--host", "0.0.0.0", "--port", "8102", "--workers", "2"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PORT=8102
+    depends_on:
+      - kafka
+
+  eta-service:
+    build:
+      context: ../../
+      dockerfile: rideconnect-platform/docker/Dockerfile
+    command: ["uvicorn", "app:app", "--app-dir", "services/eta-service", "--host", "0.0.0.0", "--port", "8103", "--workers", "2"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PORT=8103
+    depends_on:
+      - kafka
+
+  demand-service:
+    build:
+      context: ../../
+      dockerfile: rideconnect-platform/docker/Dockerfile
+    command: ["uvicorn", "app:app", "--app-dir", "services/demand-service", "--host", "0.0.0.0", "--port", "8104", "--workers", "2"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PORT=8104
+    depends_on:
+      - kafka
+
+  driver-prediction-service:
+    build:
+      context: ../../
+      dockerfile: rideconnect-platform/docker/Dockerfile
+    command: ["uvicorn", "app:app", "--app-dir", "services/driver-prediction-service", "--host", "0.0.0.0", "--port", "8105", "--workers", "2"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PORT=8105
+    depends_on:
+      - kafka
+
+  event-processors:
+    build:
+      context: ../../
+      dockerfile: rideconnect-platform/docker/Dockerfile
+    command: ["python", "streaming/event_processors/pipeline_runner.py"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PIPELINE_POLL_SECONDS=0.5
+    depends_on:
+      - kafka

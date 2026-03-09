@@ -2,7 +2,7 @@ services:
   ai-service:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     container_name: rideconnect_ai
     restart: unless-stopped
     env_file:
@@ -15,17 +15,17 @@ services:
       REDIS_QUEUE_NAME: ${REDIS_QUEUE_NAME:-rideconnect:jobs}
       REDIS_QUEUE_ENABLED: ${REDIS_QUEUE_ENABLED:-true}
     command: >
-      sh -c "uvicorn app.main:app
+      sh -c "uvicorn api.server:app
       --host 0.0.0.0
-      --port 8001
+      --port 8000
       --workers ${UVICORN_WORKERS:-2}"
     ports:
-      - "8001:8001"
+      - "8000:8000"
     volumes:
       - ai_models:/app/models
       - ai_logs:/app/logs
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8001/"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/"]
       interval: 30s
       timeout: 10s
       retries: 5
