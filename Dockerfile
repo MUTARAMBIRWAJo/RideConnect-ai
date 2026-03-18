@@ -12,17 +12,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir \
+    --retries 20 \
+    --timeout 120 \
+    --trusted-host pypi.org \
+    --trusted-host files.pythonhosted.org \
+    -r requirements.txt
 
-COPY ./app ./app
+COPY . .
 
 # Persistent directories (overridden by Docker volumes in production)
-RUN mkdir -p logs models
+RUN mkdir -p logs models/weights datasets
 
-EXPOSE 10000
+EXPOSE 8001
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD sh -c 'curl -f http://localhost:${PORT:-10000}/ || exit 1'
+    CMD sh -c 'curl -f http://localhost:${PORT:-8001}/ || exit 1'
 
 # Worker count is configurable for horizontal scaling scenarios.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers ${UVICORN_WORKERS:-1}"]
+CMD ["sh", "-c", "uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8001} --workers ${UVICORN_WORKERS:-1}"]

@@ -22,10 +22,14 @@ Currency: RWF (Rwandan Francs)
 Names:    Kinyarwanda
 """
 
+import os
 import random, datetime, math, hashlib, psycopg2
 from psycopg2.extras import execute_values
 
-DB = "postgresql://postgres.tpahuvmhlfluztuhznfj:rOnptMsAAnTbrpIY@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+DB = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres.tpahuvmhlfluztuhznfj:rOnptMsAAnTbrpIY@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require",
+)
 
 # -----------------------------------------------------------------
 # Rwanda name pools
@@ -194,6 +198,9 @@ def random_dt(days_back=365):
 def fake_hash():
     return "$2y$10$" + hashlib.sha256(rng.randbytes(16)).hexdigest()[:53]
 
+def utc_now():
+    return datetime.datetime.now(datetime.UTC)
+
 def rw_phone():
     return rng.choice(["078","079","072","073"]) + str(rng.randint(1000000, 9999999))
 
@@ -283,8 +290,9 @@ execute_values(cur, """
 mob_pax_ids = [r[0] for r in cur.fetchall()]
 print(f"   -> {len(mob_pax_ids)} mobile passenger users (IDs {mob_pax_ids[0]}-{mob_pax_ids[-1]})")
 
-# All valid passenger IDs (existing + new)
-ALL_PAX_IDS = list(range(1, max_mid + 1)) + mob_pax_ids
+# All valid passenger IDs from the live database
+cur.execute("SELECT id FROM mobile_users WHERE role='PASSENGER' ORDER BY id")
+ALL_PAX_IDS = [r[0] for r in cur.fetchall()]
 
 # -----------------------------------------------------------------
 # Step 4: Drivers (user_id -> web driver users)
@@ -297,7 +305,7 @@ for uid in web_drv_user_ids:
     r_cnt  = rng.randint(5, max(5, total))
     bal    = rng.randint(5000, 200000)
     appr   = random_dt(300)
-    drv_rows.append((uid, f"RW{rng.randint(100000,999999)}", f"RAC {rng.randint(100,999)} {rng.choice('ABCDEFGHJKLM')}",
+    drv_rows.append((uid, f"RW{uid:06d}", f"RAC-{uid:06d}",
                      "approved", total, rating, r_cnt, bal, appr, appr, appr, None))
 execute_values(cur, """
     INSERT INTO drivers (user_id,license_number,license_plate,status,total_rides,
@@ -307,7 +315,9 @@ execute_values(cur, """
 drv_ids = [r[0] for r in cur.fetchall()]
 print(f"   -> {len(drv_ids)} drivers (IDs {drv_ids[0]}-{drv_ids[-1]})")
 
-ALL_DRV_IDS = list(range(1, max_did + 1)) + drv_ids
+cur.execute("SELECT id FROM drivers ORDER BY id")
+ALL_DRV_IDS = [r[0] for r in cur.fetchall()]
+drv_to_mobile_driver = {driver_id: mobile_driver_id for driver_id, mobile_driver_id in zip(drv_ids, mob_drv_ids)}
 
 # -----------------------------------------------------------------
 # Step 5: Vehicles
@@ -374,13 +384,13 @@ print(f"   -> {len(new_ride_ids)} rides")
 # -----------------------------------------------------------------
 # Step 7: Trips
 #   passenger_id -> mobile_users.id (PASSENGER)
-#   driver_id    -> mobile_users.id (DRIVER)  <-- KEY FIX
+#   driver_id    -> drivers.id
 # -----------------------------------------------------------------
 print("7. Inserting trips...")
 trip_rows = []
 for _ in range(500):
     pid  = rng.choice(ALL_PAX_IDS)
-    did  = rng.choice(mob_drv_ids)          # mobile_users DRIVER
+    did  = rng.choice(drv_ids)
     o    = rng.choice(LOCATIONS)
     d    = rng.choice([l for l in LOCATIONS if l != o])
     dist = haversine(o[1], o[2], d[1], d[2])
@@ -413,7 +423,7 @@ new_trip_ids = [r[0] for r in cur.fetchall()]
 print(f"   -> {len(new_trip_ids)} trips")
 
 # -----------------------------------------------------------------
-# Step 8: Driver earnings (driver_id -> mobile_users.id)  <-- KEY FIX
+# Step 8: Driver earnings (driver_id -> mobile_users.id)
 # -----------------------------------------------------------------
 print("8. Inserting driver_earnings...")
 cur.execute("""
@@ -423,11 +433,14 @@ cur.execute("""
 """)
 completed_trips = cur.fetchall()
 earn_rows = []
-for tid, mob_did, fare in completed_trips:
+for tid, trip_driver_id, fare in completed_trips:
     if fare is None: continue
+    mobile_driver_id = drv_to_mobile_driver.get(trip_driver_id)
+    if mobile_driver_id is None:
+        continue
     fare = float(fare)
     comm = round(fare * rng.uniform(0.12, 0.18), 0)
-    earn_rows.append((mob_did, tid, fare, comm, fare - comm))
+    earn_rows.append((mobile_driver_id, tid, fare, comm, fare - comm))
 execute_values(cur, """
     INSERT INTO driver_earnings (driver_id, trip_id, amount, commission, net_amount)
     VALUES %s ON CONFLICT DO NOTHING
@@ -534,7 +547,7 @@ for did in ALL_DRV_IDS:
     loc = rng.choice(KIGALI_LOCS)
     lat = round(loc[1] + rng.uniform(-0.015, 0.015), 7)
     lng = round(loc[2] + rng.uniform(-0.015, 0.015), 7)
-    rec = datetime.datetime.utcnow() - datetime.timedelta(minutes=rng.randint(0, 30))
+    rec = utc_now() - datetime.timedelta(minutes=rng.randint(0, 30))
     loc_rows.append((did, lat, lng, round(rng.uniform(0,360),2), round(rng.uniform(0,60),1), rec, rec))
 execute_values(cur, """
     INSERT INTO driver_locations (driver_id,latitude,longitude,heading,speed_kmh,recorded_at,created_at)
@@ -550,8 +563,8 @@ ds_rows = []
 for did in ALL_DRV_IDS:
     st = rng.choices(["online","online","offline","on_trip"], weights=[3,3,2,1])[0]
     ds_rows.append((did, st,
-                    datetime.datetime.utcnow() - datetime.timedelta(minutes=rng.randint(0,60)),
-                    datetime.datetime.utcnow()))
+                    utc_now() - datetime.timedelta(minutes=rng.randint(0,60)),
+                    utc_now()))
 execute_values(cur, """
     INSERT INTO driver_status (driver_id,status,last_seen,updated_at)
     VALUES %s
@@ -706,7 +719,7 @@ print("18. Inserting system_metrics...")
 cur.execute("DELETE FROM system_metrics")
 sm_rows = []
 for i in range(72):
-    ts = datetime.datetime.utcnow() - datetime.timedelta(hours=i)
+    ts = utc_now() - datetime.timedelta(hours=i)
     sm_rows.extend([
         ("api_requests_per_minute",   rng.uniform(10, 120),      "req/min", ts),
         ("avg_prediction_latency_ms", rng.uniform(8,  80),       "ms",      ts),

@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse
 from api.routes.demand import router as demand_router
 from api.routes.eta import router as eta_router
 from api.routes.matching import router as matching_router
+from api.routes.admin import router as admin_router
+from api.routes.predict import router as predict_router
 from api.routes.pricing import router as pricing_router
 from utils.logger import get_logger
 
@@ -43,3 +45,5 @@ app.include_router(matching_router, prefix="/ai", tags=["Matching AI"])
 app.include_router(pricing_router, prefix="/ai", tags=["Pricing AI"])
 app.include_router(eta_router, prefix="/ai", tags=["ETA AI"])
 app.include_router(demand_router, prefix="/ai", tags=["Demand AI"])
+app.include_router(predict_router, tags=["Ride Intelligence"])
+app.include_router(admin_router, tags=["Model Operations"])

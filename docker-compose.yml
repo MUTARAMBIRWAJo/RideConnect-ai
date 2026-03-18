@@ -3,7 +3,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: rideconnect_ai
     restart: unless-stopped
     env_file:
       - .env
@@ -17,15 +16,15 @@ services:
     command: >
       sh -c "uvicorn api.server:app
       --host 0.0.0.0
-      --port 8000
+      --port 8001
       --workers ${UVICORN_WORKERS:-2}"
     ports:
-      - "8000:8000"
+      - "8001:8001"
     volumes:
       - ai_models:/app/models
       - ai_logs:/app/logs
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -40,7 +39,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: rideconnect_ai_worker
     restart: unless-stopped
     env_file:
       - .env
@@ -62,7 +60,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: rideconnect_redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
