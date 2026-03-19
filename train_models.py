@@ -18,12 +18,16 @@ import math
 import os
 import pickle
 import random
+import re
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
 DATASET_PATH = Path("datasets/rides_dataset.csv")
+RAW_KIGALI_DATASET_PATH = Path("docs/kigali_rides.csv")
+ALLOW_RAW_KIGALI_FALLBACK = os.getenv("ALLOW_RAW_KIGALI_FALLBACK", "false").lower() == "true"
 MODEL_DIR = Path("models")
 METRICS_PATH = MODEL_DIR / "model_metrics.json"
 
@@ -55,11 +59,88 @@ def _safe_int(v: Any, default: int = 0) -> int:
 
 def _load_rows_from_csv() -> list[dict[str, Any]]:
     if not DATASET_PATH.exists():
+        if ALLOW_RAW_KIGALI_FALLBACK:
+            return _load_rows_from_raw_kigali_csv()
         return []
 
     with DATASET_PATH.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         return list(reader)
+
+
+def _extract_driver_id(value: Any) -> int:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return int(digits) if digits else 0
+
+
+def _load_rows_from_raw_kigali_csv() -> list[dict[str, Any]]:
+    if not RAW_KIGALI_DATASET_PATH.exists():
+        return []
+
+    with RAW_KIGALI_DATASET_PATH.open("r", encoding="utf-8") as f:
+        raw_rows = list(csv.DictReader(f))
+
+    if not raw_rows:
+        return []
+
+    zone_hour_counts: dict[tuple[str, int], int] = defaultdict(int)
+    for r in raw_rows:
+        dt_text = str(r.get("request_time", "")).strip()
+        try:
+            dt = datetime.strptime(dt_text, "%d/%m/%Y %H:%M")
+            hour = dt.hour
+        except Exception:
+            hour = 12
+        zone = f"{round(_safe_float(r.get('pickup_lat')), 2)}:{round(_safe_float(r.get('pickup_lng')), 2)}"
+        zone_hour_counts[(zone, hour)] += 1
+
+    rows: list[dict[str, Any]] = []
+    for r in raw_rows:
+        dt_text = str(r.get("request_time", "")).strip()
+        try:
+            dt = datetime.strptime(dt_text, "%d/%m/%Y %H:%M")
+            hour = dt.hour
+            dow = dt.weekday()
+        except Exception:
+            hour = 12
+            dow = 0
+
+        p_lat = _safe_float(r.get("pickup_lat"))
+        p_lng = _safe_float(r.get("pickup_lng"))
+        d_lat = _safe_float(r.get("dropoff_lat"))
+        d_lng = _safe_float(r.get("dropoff_lng"))
+        zone = f"{round(p_lat, 2)}:{round(p_lng, 2)}"
+
+        distance = _safe_float(r.get("distance_km"))
+        duration_min = _safe_float(r.get("duration_min"), max(1.0, distance / 28.0 * 60.0))
+        surge = max(1.0, min(3.0, _safe_float(r.get("surge_multiplier"), 1.0)))
+
+        if 7 <= hour <= 9 or 17 <= hour <= 19:
+            traffic = 0.65
+        elif 20 <= hour <= 23:
+            traffic = 0.5
+        else:
+            traffic = 0.3
+
+        rows.append(
+            {
+                "driver_id": str(_extract_driver_id(r.get("driver_id"))),
+                "pickup_lat": str(p_lat),
+                "pickup_lng": str(p_lng),
+                "dropoff_lat": str(d_lat),
+                "dropoff_lng": str(d_lng),
+                "distance": str(distance),
+                "estimated_time": str(duration_min),
+                "demand_density": str(float(zone_hour_counts.get((zone, hour), 1))),
+                "driver_density": "1.0",
+                "traffic_level": str(traffic),
+                "time_of_day": str(hour),
+                "day_of_week": str(dow),
+                "ride_duration": str(duration_min * 60.0),
+                "surge_multiplier": str(surge),
+            }
+        )
+    return rows
 
 
 def _generate_synthetic_rows(n: int = 1200) -> list[dict[str, Any]]:

@@ -33,8 +33,13 @@ ALTER TABLE IF EXISTS driver_locations
   ADD COLUMN IF NOT EXISTS speed_kmh NUMERIC(6,2),
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 
-CREATE INDEX IF NOT EXISTS idx_driver_locations_recorded_at
-  ON driver_locations(recorded_at DESC);
+DO $$
+BEGIN
+  IF to_regclass('public.driver_locations') IS NOT NULL THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_driver_locations_recorded_at ON driver_locations(recorded_at DESC)';
+  END IF;
+END
+$$;
 
 DO $$
 DECLARE
@@ -101,7 +106,15 @@ END
 $$;
 SQL
 
-echo "[4/5] Running Rwanda seed script..."
-python3 seeds/002_rwanda_seed.py
+echo "[4/5] Running seed script..."
+HAS_FULL_SCHEMA="$(psql "$DATABASE_URL" -Atc "SELECT CASE WHEN EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='drivers') AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='vehicles') AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='mobile_users') AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='rides') AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='trips') THEN '1' ELSE '0' END;")"
+
+if [[ "$HAS_FULL_SCHEMA" == "1" ]]; then
+  echo "Detected full ride schema, running comprehensive Rwanda seed."
+  python3 seeds/002_rwanda_seed.py
+else
+  echo "Core ride tables are missing; running append-only seeder for available tables."
+  python3 seeds/seed_existing_tables_append.py
+fi
 
 echo "[5/5] Seed complete."

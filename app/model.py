@@ -17,6 +17,7 @@ import joblib
 import numpy as np
 
 from app.utils import logger
+from utils.rura_tariffs import corridor_reference_fare, lookup_rura_tariff
 
 # ---------------------------------------------------------------------------
 # Ride-type encoding — must stay in sync with app/train_model.py
@@ -71,24 +72,45 @@ class PriceModel:
         ride_type: str = "standard",
         hour: Optional[int] = None,
         day_of_week: Optional[int] = None,
+        route_code: Optional[str] = None,
+        origin_stop: Optional[str] = None,
+        destination_stop: Optional[str] = None,
+        corridor: Optional[str] = None,
     ) -> float:
         now = datetime.datetime.now()
         hour = hour if hour is not None else now.hour
         day_of_week = day_of_week if day_of_week is not None else now.weekday()
         ride_type_enc = RIDE_TYPE_MAP.get(ride_type.lower().strip(), 0)
 
+        tariff = lookup_rura_tariff(
+            route_code=route_code,
+            origin_stop=origin_stop,
+            destination_stop=destination_stop,
+            corridor=corridor,
+        )
+        if tariff is not None:
+            return float(tariff["fare_rwf"])
+
         if not self.is_loaded:
             # Rule-based fallback prices calibrated for Rwandan market (RWF)
             base = self.BASE_PRICE + distance_km * 200
             surge = 1.0 + (demand_level - 1) * 0.15 + (traffic_level - 1) * 0.08
             type_premium = [0, 400, 200, -100][ride_type_enc]
-            return round((base * surge) + type_premium, 2)
+            fallback_price = round((base * surge) + type_premium, 2)
+            corridor_fare = corridor_reference_fare(corridor)
+            if corridor_fare is not None:
+                return round(0.7 * corridor_fare + 0.3 * fallback_price, 2)
+            return fallback_price
 
         features = np.array(
             [[distance_km, demand_level, traffic_level, ride_type_enc, hour, day_of_week]]
         )
         try:
-            return round(float(self._model.predict(features)[0]), 2)
+            model_price = round(float(self._model.predict(features)[0]), 2)
+            corridor_fare = corridor_reference_fare(corridor)
+            if corridor_fare is not None:
+                return round(0.7 * corridor_fare + 0.3 * model_price, 2)
+            return model_price
         except Exception as exc:
             logger.error("Model prediction error: %s", exc)
             return round(self.BASE_PRICE + distance_km * 200, 2)

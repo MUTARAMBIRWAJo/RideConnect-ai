@@ -54,6 +54,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security, s
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
 
+from api.services.colab_inference import get_colab_inference_service
 from app import service
 from app.routes.anomalies import router as ai_anomalies_router
 from app.routes.demand import router as ai_demand_router
@@ -61,9 +62,172 @@ from app.routes.driver_behavior import router as ai_driver_behavior_router
 from app.routes.redistribution import router as ai_redistribution_router
 from app.routes.traffic import router as ai_traffic_router
 from app.utils import logger
+from utils.rura_tariffs import corridor_reference_fare, lookup_rura_tariff
+from utils.rura_zones import coords_to_zone
 
 PRICE_CACHE_TTL_SECONDS = int(os.getenv("PRICE_CACHE_TTL_SECONDS", "300"))
 DEMAND_CACHE_TTL_SECONDS = int(os.getenv("DEMAND_CACHE_TTL_SECONDS", "120"))
+ENABLE_COLAB_COMPAT = os.getenv("ENABLE_COLAB_COMPAT", "true").lower() == "true"
+
+
+def _coords_to_colab_zone(lat: float, lng: float) -> str:
+    return coords_to_zone(lat, lng)
+
+
+def _demand_label_to_score(label: str, confidence: float) -> float:
+    base = {"low": 0.35, "medium": 0.65, "high": 0.9}.get(str(label).lower(), 0.55)
+    return round(max(0.0, min(1.0, 0.5 * base + 0.5 * confidence)), 4)
+
+
+def _demand_int_to_label(v: int) -> str:
+    if v <= 2:
+        return "low"
+    if v == 3:
+        return "medium"
+    return "high"
+
+
+def _ride_type_base_fare(ride_type: str) -> float:
+    mapping = {
+        "standard": 900.0,
+        "premium": 1800.0,
+        "boda": 550.0,
+        "shared": 700.0,
+    }
+    return mapping.get(str(ride_type).lower(), 900.0)
+
+
+def _build_legacy_price_response(payload: PricePredictRequest) -> dict[str, Any]:
+    tariff = lookup_rura_tariff(
+        route_code=payload.route_code,
+        origin_stop=payload.origin_stop,
+        destination_stop=payload.destination_stop,
+        corridor=payload.corridor,
+    )
+    if tariff is not None:
+        return {
+            "recommended_price": float(tariff["fare_rwf"]),
+            "currency": "RWF",
+            "model_used": True,
+            "cached": False,
+            "fare_source": "rura_official",
+            "corridor": tariff.get("corridor"),
+            "route_code": tariff.get("route_code"),
+            "origin_stop": tariff.get("origin_stop"),
+            "destination_stop": tariff.get("destination_stop"),
+        }
+
+    now = datetime.datetime.now()
+    hour = now.hour
+    weekday = now.weekday()
+    demand_label = _demand_int_to_label(int(payload.demand_level))
+
+    colab_req = {
+        "hour": hour,
+        "weekday": weekday,
+        "is_weekend": int(weekday >= 5),
+        "is_rush_hour": int(7 <= hour <= 9 or 17 <= hour <= 19),
+        "month": now.month,
+        "pickup_zone": "CBD",
+        "distance_km": float(payload.distance_km),
+        "zone_hour_count": max(1, int(round(2 + payload.demand_level * 1.5))),
+        "demand_level": demand_label,
+        "driver_idle_time": round(max(1.0, 24.0 - float(payload.demand_level) * 3.2), 2),
+        "wait_time_min": round(max(1.0, float(payload.traffic_level) * 2.2), 2),
+    }
+
+    colab = get_colab_inference_service().predict_surge(colab_req)
+    multiplier = float(colab.get("surge_multiplier", 1.0))
+    base_fare = _ride_type_base_fare(payload.ride_type)
+    distance_component = float(payload.distance_km) * 520.0
+    recommended_price = round(max(500.0, (base_fare + distance_component) * multiplier), 2)
+
+    corridor_anchor = corridor_reference_fare(payload.corridor)
+    if corridor_anchor is not None:
+        recommended_price = round(0.7 * corridor_anchor + 0.3 * recommended_price, 2)
+
+    return {
+        "recommended_price": recommended_price,
+        "currency": "RWF",
+        "model_used": True,
+        "cached": False,
+        "fare_source": "corridor_blend" if corridor_anchor is not None else "model_blend",
+        "translated_colab_request": colab_req,
+        "colab_response": colab,
+    }
+
+
+async def _build_legacy_driver_response(payload: DriverPredictRequest) -> dict[str, Any]:
+    started = time.perf_counter()
+    selected: dict[str, Any] | None = None
+
+    try:
+        rows = await service.database.fetch_all(
+            "SELECT d.id, u.name, d.rating, d.total_rides FROM drivers d "
+            "JOIN users u ON u.id=d.user_id WHERE d.status='active' AND d.deleted_at IS NULL "
+            "ORDER BY d.rating DESC LIMIT 20"
+        )
+        if rows:
+            weights = [float(r["rating"] or 1.0) for r in rows]
+            selected = dict(random.choices(rows, weights=weights, k=1)[0])
+    except Exception as exc:
+        logger.warning("compat/predict-driver DB error: %s", exc)
+
+    zone = _coords_to_colab_zone(payload.pickup_lat, payload.pickup_lng)
+    now = datetime.datetime.now()
+    hour = now.hour
+    weekday = now.weekday()
+
+    colab_req = {
+        "hour": hour,
+        "weekday": weekday,
+        "is_weekend": int(weekday >= 5),
+        "is_rush_hour": int(7 <= hour <= 9 or 17 <= hour <= 19),
+        "pickup_zone": zone,
+        "dropoff_zone": zone,
+        "distance_km": 3.5,
+        "driver_rating": 4.2,
+        "driver_idle_time": 10.0,
+        "driver_cancel_rate": 0.1,
+        "driver_avg_rating": 4.2,
+        "driver_total_rides": 200,
+        "surge_multiplier": 1.0,
+        "demand_level": "medium",
+    }
+
+    colab = None
+    try:
+        colab = get_colab_inference_service().predict_match(colab_req)
+    except Exception:
+        colab = None
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    if not selected:
+        return {
+            "driver_id": None,
+            "driver_name": None,
+            "rating": None,
+            "total_rides": None,
+            "note": "No active drivers available.",
+            "latency_ms": latency_ms,
+            "translated_colab_request": colab_req,
+            "colab_response": colab,
+        }
+
+    note = "Selected by weighted rating (legacy compatibility)."
+    if isinstance(colab, dict):
+        note += f" Completion probability={colab.get('completion_probability', 'n/a')}"
+
+    return {
+        "driver_id": selected.get("id"),
+        "driver_name": selected.get("name"),
+        "rating": float(selected.get("rating") or 0.0),
+        "total_rides": selected.get("total_rides"),
+        "note": note,
+        "latency_ms": latency_ms,
+        "translated_colab_request": colab_req,
+        "colab_response": colab,
+    }
 
 # ---------------------------------------------------------------------------
 # Lazy-loaded AI modules (imported inside handlers to avoid startup errors
@@ -223,6 +387,10 @@ class PricePredictRequest(BaseModel):
     demand_level: int = Field(..., ge=1, le=5)
     traffic_level: int = Field(..., ge=1, le=5)
     ride_type: str = Field("standard")
+    corridor: Optional[str] = None
+    route_code: Optional[str] = None
+    origin_stop: Optional[str] = None
+    destination_stop: Optional[str] = None
 
 class PricePredictResponse(BaseModel):
     recommended_price: float
@@ -258,6 +426,61 @@ class DemandRequest(BaseModel):
     historical_count: int = Field(20, ge=0)
     weather: str = Field("clear")
     event_indicator: int = Field(0, ge=0, le=1)
+
+
+class ColabDemandRequest(BaseModel):
+    hour: int = Field(..., ge=0, le=23)
+    weekday: int = Field(..., ge=0, le=6)
+    month: int = Field(..., ge=1, le=12)
+    is_weekend: int = Field(..., ge=0, le=1)
+    pickup_zone: str
+    zone_hour_count: int = Field(5, ge=0)
+
+
+class ColabMatchRequest(BaseModel):
+    hour: int = Field(..., ge=0, le=23)
+    weekday: int = Field(..., ge=0, le=6)
+    is_weekend: int = Field(..., ge=0, le=1)
+    is_rush_hour: int = Field(..., ge=0, le=1)
+    pickup_zone: str
+    dropoff_zone: str
+    distance_km: float = Field(..., ge=0)
+    driver_rating: float = Field(..., ge=0)
+    driver_idle_time: float = Field(..., ge=0)
+    driver_cancel_rate: float = Field(..., ge=0)
+    driver_avg_rating: float = Field(..., ge=0)
+    driver_total_rides: int = Field(..., ge=0)
+    surge_multiplier: float = Field(..., ge=1.0)
+    demand_level: str
+
+
+class ColabBehaviorRequest(BaseModel):
+    hour: int = Field(..., ge=0, le=23)
+    weekday: int = Field(..., ge=0, le=6)
+    is_rush_hour: int = Field(..., ge=0, le=1)
+    driver_rating: float = Field(..., ge=0)
+    driver_idle_time: float = Field(..., ge=0)
+    driver_total_rides: int = Field(..., ge=0)
+    driver_cancel_rate: float = Field(..., ge=0)
+    distance_km: float = Field(..., ge=0)
+    duration_min: float = Field(..., ge=0)
+    fare_rwf: float = Field(..., ge=0)
+    surge_multiplier: float = Field(..., ge=1.0)
+    pickup_zone: str
+
+
+class ColabSurgeRequest(BaseModel):
+    hour: int = Field(..., ge=0, le=23)
+    weekday: int = Field(..., ge=0, le=6)
+    is_weekend: int = Field(..., ge=0, le=1)
+    is_rush_hour: int = Field(..., ge=0, le=1)
+    month: int = Field(..., ge=1, le=12)
+    pickup_zone: str
+    distance_km: float = Field(..., ge=0)
+    zone_hour_count: int = Field(5, ge=0)
+    demand_level: str
+    driver_idle_time: float = Field(..., ge=0)
+    wait_time_min: float = Field(..., ge=0)
 
 class RouteRequest(BaseModel):
     pickup_lat: float
@@ -350,59 +573,34 @@ async def health_check(_: str = Depends(require_api_key)):
 # ===========================================================================
 # ROUTES — Predictions (existing)
 # ===========================================================================
-@app.post("/predict-price", response_model=PricePredictResponse, tags=["Predictions"])
+@app.post("/predict-price", tags=["Predictions"])
 async def predict_price(body: PricePredictRequest, _: str = Depends(require_api_key)):
-    cache_key = (
-        "rideconnect:cache:price:"
-        f"{body.distance_km}:{body.demand_level}:{body.traffic_level}:{body.ride_type}"
-    )
-    cached_payload = await service.cache_get_json(cache_key)
-    if cached_payload:
-        cached = dict(cached_payload)
-        cached["cached"] = True
-        return PricePredictResponse(**cached)
-
-    price = service.price_model.predict(
-        distance_km=body.distance_km, demand_level=body.demand_level,
-        traffic_level=body.traffic_level, ride_type=body.ride_type,
-    )
-    payload = {"recommended_price": price, "currency": "RWF",
-               "model_used": service.price_model.is_loaded, "cached": False}
-    await service.cache_set_json(cache_key, payload, ttl_seconds=PRICE_CACHE_TTL_SECONDS)
-
+    """Legacy alias with compatibility response shape (symmetric with api.server)."""
     try:
-        await service.database.execute(
-            "INSERT INTO ai_price_predictions "
-            "(distance_km,demand_level,traffic_level,ride_type,predicted_price) "
-            "VALUES (:dist,:demand,:traffic,:ride_type,:price)",
-            {"dist": body.distance_km, "demand": body.demand_level,
-             "traffic": body.traffic_level, "ride_type": body.ride_type, "price": price},
-        )
-    except Exception:
-        pass
-    return PricePredictResponse(**payload)
-
-
-@app.post("/predict-driver", response_model=DriverPredictResponse, tags=["Predictions"])
-async def predict_driver(body: DriverPredictRequest, _: str = Depends(require_api_key)):
-    try:
-        rows = await service.database.fetch_all(
-            "SELECT d.id, u.name, d.rating, d.total_rides FROM drivers d "
-            "JOIN users u ON u.id=d.user_id WHERE d.status='active' AND d.deleted_at IS NULL "
-            "ORDER BY d.rating DESC LIMIT 20"
-        )
-        if rows:
-            weights = [float(r["rating"] or 1.0) for r in rows]
-            driver = random.choices(rows, weights=weights, k=1)[0]
-            return DriverPredictResponse(
-                driver_id=driver["id"], driver_name=driver["name"],
-                rating=float(driver["rating"] or 0), total_rides=driver["total_rides"],
-                note="Selected by weighted rating (legacy endpoint).",
-            )
+        return _build_legacy_price_response(body)
     except Exception as exc:
-        logger.warning("predict-driver DB error: %s", exc)
-    return DriverPredictResponse(driver_id=None, driver_name=None, rating=None,
-                                  total_rides=None, note="No active drivers available.")
+        raise HTTPException(status_code=503, detail=f"price prediction unavailable: {exc}") from exc
+
+
+@app.post("/predict-driver", tags=["Predictions"])
+async def predict_driver(body: DriverPredictRequest, _: str = Depends(require_api_key)):
+    """Legacy alias with compatibility response shape (symmetric with api.server)."""
+    return await _build_legacy_driver_response(body)
+
+
+@app.post("/compat/predict-price", tags=["Predictions"])
+async def compat_predict_price(body: PricePredictRequest, _: str = Depends(require_api_key)):
+    """Compatibility translator from legacy pricing payload to Colab/RURA output shape."""
+    try:
+        return _build_legacy_price_response(body)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"compat price prediction unavailable: {exc}") from exc
+
+
+@app.post("/compat/predict-driver", tags=["Predictions"])
+async def compat_predict_driver(body: DriverPredictRequest, _: str = Depends(require_api_key)):
+    """Compatibility translator from legacy driver payload to Colab-compatible matching metadata."""
+    return await _build_legacy_driver_response(body)
 
 
 # ===========================================================================
@@ -463,6 +661,39 @@ async def predict_demand(body: DemandRequest, _: str = Depends(require_api_key))
     hour = body.hour if body.hour is not None else now.hour
     dow = body.day_of_week if body.day_of_week is not None else now.weekday()
 
+    if ENABLE_COLAB_COMPAT:
+        try:
+            zone = _coords_to_colab_zone(body.latitude, body.longitude)
+            zone_hour_count = max(1, int(body.historical_count))
+
+            colab_req = {
+                "hour": hour,
+                "weekday": dow,
+                "month": now.month,
+                "is_weekend": int(dow >= 5),
+                "pickup_zone": zone,
+                "zone_hour_count": zone_hour_count,
+            }
+            colab = get_colab_inference_service().predict_demand(colab_req)
+            demand_score = _demand_label_to_score(colab.get("predicted_demand", "medium"), float(colab.get("confidence", 0.6)))
+            predicted_requests = max(1, int(round(zone_hour_count * (0.8 + demand_score))))
+
+            return {
+                "zone_id": None,
+                "zone_name": zone,
+                "latitude": body.latitude,
+                "longitude": body.longitude,
+                "hour": hour,
+                "day_of_week": dow,
+                "demand_score": demand_score,
+                "predicted_requests": predicted_requests,
+                "confidence": round(float(colab.get("confidence", 0.6)), 4),
+                "source": "colab_compat",
+                "colab": colab,
+            }
+        except Exception as exc:
+            logger.warning("Colab compatibility path failed for /predict-demand: %s", exc)
+
     cache_key = (
         "rideconnect:cache:demand:"
         f"{round(body.latitude, 2)}:{round(body.longitude, 2)}:{hour}:{dow}:"
@@ -522,6 +753,89 @@ async def predict_demand(body: DemandRequest, _: str = Depends(require_api_key))
     except Exception:
         pass
     return payload
+
+
+@app.post("/compat/predict-demand", tags=["Advanced AI"])
+async def compat_predict_demand(body: DemandRequest, _: str = Depends(require_api_key)):
+    """Compatibility route translating legacy demand payload to Colab schema."""
+    now = datetime.datetime.now()
+    hour = body.hour if body.hour is not None else now.hour
+    dow = body.day_of_week if body.day_of_week is not None else now.weekday()
+    zone = _coords_to_colab_zone(body.latitude, body.longitude)
+
+    payload = {
+        "hour": hour,
+        "weekday": dow,
+        "month": now.month,
+        "is_weekend": int(dow >= 5),
+        "pickup_zone": zone,
+        "zone_hour_count": max(1, int(body.historical_count)),
+    }
+
+    try:
+        colab = get_colab_inference_service().predict_demand(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Colab demand prediction unavailable: {exc}") from exc
+
+    demand_score = _demand_label_to_score(colab.get("predicted_demand", "medium"), float(colab.get("confidence", 0.6)))
+    predicted_requests = max(1, int(round(max(1, body.historical_count) * (0.8 + demand_score))))
+
+    return {
+        "legacy_response": {
+            "zone_id": None,
+            "zone_name": zone,
+            "latitude": body.latitude,
+            "longitude": body.longitude,
+            "hour": hour,
+            "day_of_week": dow,
+            "demand_score": demand_score,
+            "predicted_requests": predicted_requests,
+            "confidence": round(float(colab.get("confidence", 0.6)), 4),
+            "source": "compat_colab",
+        },
+        "translated_colab_request": payload,
+        "colab_response": colab,
+    }
+
+
+@app.post("/predict/demand", tags=["Advanced AI"])
+async def colab_predict_demand(body: ColabDemandRequest, _: str = Depends(require_api_key)):
+    try:
+        return get_colab_inference_service().predict_demand(body.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Colab demand prediction unavailable: {exc}") from exc
+
+
+@app.post("/predict/match", tags=["Advanced AI"])
+async def colab_predict_match(body: ColabMatchRequest, _: str = Depends(require_api_key)):
+    try:
+        return get_colab_inference_service().predict_match(body.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Colab match prediction unavailable: {exc}") from exc
+
+
+@app.post("/predict/behavior", tags=["Advanced AI"])
+async def colab_predict_behavior(body: ColabBehaviorRequest, _: str = Depends(require_api_key)):
+    try:
+        return get_colab_inference_service().predict_behavior(body.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Colab behavior prediction unavailable: {exc}") from exc
+
+
+@app.post("/predict/surge", tags=["Advanced AI"])
+async def colab_predict_surge(body: ColabSurgeRequest, _: str = Depends(require_api_key)):
+    try:
+        return get_colab_inference_service().predict_surge(body.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Colab surge prediction unavailable: {exc}") from exc
+
+
+@app.get("/models/info", tags=["Advanced AI"])
+async def colab_models_info(_: str = Depends(require_api_key)):
+    try:
+        return get_colab_inference_service().model_info()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Colab model info unavailable: {exc}") from exc
 
 
 @app.get("/demand-hotspots", tags=["Advanced AI"])

@@ -21,13 +21,21 @@ class PredictPriceRequest(BaseModel):
     traffic_level: float = Field(0.5, ge=0.0, le=1.0)
     time_of_day: int = Field(12, ge=0, le=23)
     city_zone: str = "A"
+    corridor: str | None = None
+    route_code: str | None = None
+    origin_stop: str | None = None
+    destination_stop: str | None = None
 
 
 @router.post("/predict-price")
 def predict_price(payload: PredictPriceRequest, _: None = Depends(require_api_key)) -> Dict:
-    price = _model.predict(payload.model_dump())
+    features = payload.model_dump()
+    features["corridor"] = payload.corridor or payload.city_zone
+    price = _model.predict(features)
     return {
         "status": "ok",
         "predicted_price": price,
         "currency": "RWF",
+        "corridor": payload.corridor or payload.city_zone,
+        "route_code": payload.route_code,
     }

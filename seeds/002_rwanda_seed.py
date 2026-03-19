@@ -26,10 +26,9 @@ import os
 import random, datetime, math, hashlib, psycopg2
 from psycopg2.extras import execute_values
 
-DB = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres.tpahuvmhlfluztuhznfj:rOnptMsAAnTbrpIY@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require",
-)
+DB = os.getenv("DATABASE_URL")
+if not DB:
+    raise SystemExit("DATABASE_URL is not set")
 
 # -----------------------------------------------------------------
 # Rwanda name pools
@@ -603,13 +602,9 @@ execute_values(cur, """
 print(f"   -> {len(beh_rows)} behavior log records")
 
 # -----------------------------------------------------------------
-# Step 14: Demand zones (refresh)
+# Step 14: Demand zones (append/update)
 # -----------------------------------------------------------------
-print("14. Refreshing demand_zones...")
-# Must delete FK-referencing tables first
-cur.execute("DELETE FROM traffic_logs")
-cur.execute("DELETE FROM predicted_demand")
-cur.execute("DELETE FROM demand_zones")
+print("14. Upserting demand_zones (keep existing data)...")
 dz_data = [
     ("Kigali City Center",  -1.9441, 30.0619, 0.95, 850,  0),
     ("Kacyiru",             -1.9350, 30.0893, 0.82, 640,  1),
@@ -627,12 +622,37 @@ dz_data = [
     ("Muhanga (Gitarama)",  -2.0833, 29.7500, 0.30, 150, 13),
     ("Rwamagana",           -1.9490, 30.4337, 0.28, 130, 14),
 ]
-execute_values(cur, """
-    INSERT INTO demand_zones (zone_name,center_lat,center_lng,demand_score,ride_count,cluster_id,active)
-    VALUES %s
-""", [(r[0],r[1],r[2],r[3],r[4],r[5],True) for r in dz_data])
-cur.execute("SELECT id FROM demand_zones")
-zone_ids = [r[0] for r in cur.fetchall()]
+zone_ids = []
+for zone_name, center_lat, center_lng, demand_score, ride_count, cluster_id in dz_data:
+    cur.execute("SELECT id FROM demand_zones WHERE zone_name = %s ORDER BY id LIMIT 1", (zone_name,))
+    row = cur.fetchone()
+    if row:
+        zid = row[0]
+        cur.execute(
+            """
+            UPDATE demand_zones
+            SET center_lat=%s,
+                center_lng=%s,
+                demand_score=%s,
+                ride_count=%s,
+                cluster_id=%s,
+                active=TRUE,
+                updated_at=NOW()
+            WHERE id=%s
+            """,
+            (center_lat, center_lng, demand_score, ride_count, cluster_id, zid),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO demand_zones (zone_name,center_lat,center_lng,demand_score,ride_count,cluster_id,active)
+            VALUES (%s,%s,%s,%s,%s,%s,TRUE)
+            RETURNING id
+            """,
+            (zone_name, center_lat, center_lng, demand_score, ride_count, cluster_id),
+        )
+        zid = cur.fetchone()[0]
+    zone_ids.append(zid)
 print(f"   -> {len(zone_ids)} demand zones")
 
 # -----------------------------------------------------------------
@@ -665,9 +685,9 @@ execute_values(cur, """
 print(f"   -> {len(tl_rows)} traffic log entries")
 
 # -----------------------------------------------------------------
-# Step 16: Predicted demand
+# Step 16: Predicted demand (append)
 # -----------------------------------------------------------------
-print("16. Refreshing predicted_demand...")
+print("16. Inserting predicted_demand...")
 pd_rows = []
 for zid in zone_ids:
     for dow in range(7):
@@ -713,10 +733,9 @@ if fa_rows:
 print(f"   -> {len(fa_rows)} fare audit entries")
 
 # -----------------------------------------------------------------
-# Step 18: System metrics
+# Step 18: System metrics (append)
 # -----------------------------------------------------------------
 print("18. Inserting system_metrics...")
-cur.execute("DELETE FROM system_metrics")
 sm_rows = []
 for i in range(72):
     ts = utc_now() - datetime.timedelta(hours=i)

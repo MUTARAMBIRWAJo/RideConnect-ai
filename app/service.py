@@ -29,6 +29,7 @@ REDIS_QUEUE_NAME: str = os.environ.get("REDIS_QUEUE_NAME", "rideconnect:jobs")
 REDIS_QUEUE_ENABLED: bool = os.environ.get("REDIS_QUEUE_ENABLED", "true").lower() == "true"
 JOB_RESULT_TTL_SECONDS: int = int(os.environ.get("JOB_RESULT_TTL_SECONDS", "86400"))
 DB_ENABLED: bool = bool(DATABASE_URL)
+REQUIRE_DATABASE: bool = os.environ.get("REQUIRE_DATABASE", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # Async connection pool (asyncpg driver)
@@ -149,11 +150,21 @@ async def get_job_status(job_id: str) -> Optional[dict[str, Any]]:
 # Lifecycle helpers (called from main.py lifespan)
 # ---------------------------------------------------------------------------
 async def startup() -> None:
-    if DB_ENABLED:
-        await database.connect()
-        logger.info("Database connection pool opened.")
+    if not DB_ENABLED:
+        msg = "DATABASE_URL is not set; Supabase-backed service cannot start."
+        if REQUIRE_DATABASE:
+            logger.error(msg)
+            raise RuntimeError(msg)
+        logger.warning("%s Running in degraded mode because REQUIRE_DATABASE=false.", msg)
     else:
-        logger.warning("DATABASE_URL is not set; database-backed endpoints will be degraded.")
+        try:
+            await database.connect()
+            logger.info("Database connection pool opened.")
+        except Exception as exc:
+            if REQUIRE_DATABASE:
+                logger.error("Failed to connect to Supabase database: %s", exc)
+                raise
+            logger.warning("DB connect failed but REQUIRE_DATABASE=false. Running degraded: %s", exc)
 
     await init_redis()
 

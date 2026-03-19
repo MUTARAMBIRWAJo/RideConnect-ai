@@ -1,0 +1,13 @@
+{
+  "dataset_rows": 700,
+  "matching_accuracy": 0.041429,
+  "eta_mae_minutes": 6.032431,
+  "demand_rmse": 0.0,
+  "surge_mae": 0.450071,
+  "model_paths": {
+    "driver_matching": "models/driver_matching.pkl",
+    "eta_prediction": "models/eta_prediction.pkl",
+    "demand_prediction": "models/demand_prediction.pkl",
+    "surge_model": "models/surge_model.pkl"
+  }
+}
